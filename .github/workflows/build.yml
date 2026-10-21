@@ -1,9 +1,12 @@
-name: Build AlfDown Windows EXE
+name: Build AlfDown Windows Folder
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -15,12 +18,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install packages
-        run: python -m pip install --upgrade pyinstaller pillow
-      - name: Build EXE
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name AlfDown --icon treble.ico --add-data "treble.ico;." S3_downloader.py
-      - name: Upload Windows EXE
+      - name: Install dependencies
+        run: python -m pip install pyinstaller==6.16.0 pillow==11.3.0
+      - name: Build folder-based EXE
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name AlfDown --icon treble.ico --add-data "treble.ico;." S3_downloader.py
+      - name: Generate SHA256 checksum
+        shell: pwsh
+        run: |
+          (Get-FileHash dist/AlfDown/AlfDown.exe -Algorithm SHA256).Hash | Out-File -Encoding ascii dist/AlfDown/AlfDown.exe.sha256
+      - name: Upload folder
         uses: actions/upload-artifact@v4
         with:
-          name: AlfDown-Windows
-          path: dist/AlfDown.exe
+          name: AlfDown-Windows-Folder
+          path: dist/AlfDown/
+          if-no-files-found: error
