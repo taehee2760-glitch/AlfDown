@@ -1,162 +1,247 @@
-import os
-import queue
-import threading
-import urllib.request
-import urllib.error
+import os, re, queue, threading, urllib.request, urllib.error
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from collections import defaultdict
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 BASE = 'https://alfred-dsm-shopify-exports-prod.s3.us-west-2.amazonaws.com/'
-GROUPS = {'현악기':['VN','VA','VC','SB'], '목관악기':['P','F','O','C','BC','B'], '금관악기':['H','T','TN','TB'], '타악기':['M','TMP','PC'], '그 외':['K']}
+GROUPS = [
+ ('현악기',[('VN','바이올린'),('VA','비올라'),('VC','첼로'),('SB','스트링베이스')]),
+ ('목관악기',[('P','피콜로'),('F','플루트'),('O','오보에'),('C','클라리넷'),('BC','베이스클라리넷'),('B','바순')]),
+ ('금관악기',[('H','호른'),('T','트럼펫'),('TN','트롬본'),('TB','튜바')]),
+ ('타악기 외',[('M','말렛퍼커션'),('TMP','팀파니'),('PC','퍼커션'),('K','피아노'),('H','하프')]),
+]
 SINGLE = {'SB','BC','TMP','K'}
+EXTS = ['png','jpg','jpeg','webp']
+
+def natural_key(s):
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r'(\d+)',s)]
+
+def make_names(product, selections, parts, pages, extensions, score=False, score_token='', separator='_'):
+    mapping=defaultdict(set)
+    if score:
+        token=score_token.strip()
+        if not token or not re.fullmatch(r'[A-Za-z0-9_-]+',token):
+            raise ValueError('스코어 문자열은 영문/숫자/하이픈/밑줄로 입력하세요.')
+        for page in range(1,pages+1):
+            for ext in extensions:
+                mapping[f'{product}{separator}{token}-{page}.{ext}'].add('스코어')
+    else:
+        for group,code in selections:
+            for part in ([None] if code in SINGLE or (group=='타악기 외' and code=='H') else range(1,parts+1)):
+                for page in range(1,pages+1):
+                    for ext in extensions:
+                        name=f'{product}_{code}{"" if part is None else part}-{page}.{ext}'
+                        mapping[name].add(group)
+    return mapping
 
 class App:
-    def __init__(self, root):
-        self.root=root; root.title('AlfDown 3.0 | 악기별 이미지 검색'); root.geometry('900x750'); root.minsize(780,650)
-        self.events=queue.Queue(); self.stop=threading.Event(); self.busy=False; self.results=[]
-        self.code=tk.StringVar(value='00-PC-0019403'); self.part=tk.StringVar(value='3'); self.page=tk.StringVar(value='15'); self.workers=tk.StringVar(value='6'); self.folder=tk.StringVar(value=os.path.join(os.path.expanduser('~'),'Downloads','AlfDown'))
-        top=ttk.Frame(root,padding=12);top.pack(fill='x')
-        ttk.Label(top,text='AlfDown 3.0',font=('Segoe UI',17,'bold')).pack(anchor='w')
-        ttk.Label(top,text='공개적으로 접근 가능한 S3 이미지 주소를 파일명 패턴으로 검사합니다.').pack(anchor='w')
-        line=ttk.Frame(top);line.pack(fill='x',pady=8)
-        ttk.Label(line,text='상품 코드').pack(side='left');ttk.Entry(line,textvariable=self.code,width=36).pack(side='left',padx=8)
-        ttk.Label(line,text='파트 최대').pack(side='left');ttk.Entry(line,textvariable=self.part,width=5).pack(side='left',padx=6)
-        ttk.Label(line,text='페이지 최대').pack(side='left');ttk.Entry(line,textvariable=self.page,width=5).pack(side='left',padx=6)
-        ttk.Label(line,text='동시 요청').pack(side='left');ttk.Entry(line,textvariable=self.workers,width=4).pack(side='left',padx=6)
-        self.flags={c:tk.BooleanVar(value=(c in ['VN','VA','VC','SB'])) for codes in GROUPS.values() for c in codes}
-        for group,codes in GROUPS.items():
-            frame=ttk.LabelFrame(root,text=group,padding=(12,6));frame.pack(fill='x',padx=12,pady=3)
-            for c in codes: ttk.Checkbutton(frame,text=c,variable=self.flags[c]).pack(side='left',padx=12)
-            ttk.Button(frame,text='그룹 선택/해제',command=lambda cc=codes:self.toggle(cc)).pack(side='right')
-        opts=ttk.Frame(root,padding=(12,7));opts.pack(fill='x')
-        ttk.Button(opts,text='전체 선택',command=lambda:self.select_all(True)).pack(side='left')
-        ttk.Button(opts,text='전체 해제',command=lambda:self.select_all(False)).pack(side='left',padx=6)
-        self.exts={e:tk.BooleanVar(value=e=='png') for e in ['png','jpg','jpeg','webp']}
-        ttk.Label(opts,text='확장자:').pack(side='left',padx=(22,4))
-        for e,v in self.exts.items():ttk.Checkbutton(opts,text=e,variable=v).pack(side='left',padx=4)
-        pathrow=ttk.Frame(root,padding=(12,5));pathrow.pack(fill='x')
-        ttk.Label(pathrow,text='저장 폴더').pack(side='left');ttk.Entry(pathrow,textvariable=self.folder).pack(side='left',fill='x',expand=True,padx=8)
-        ttk.Button(pathrow,text='찾아보기',command=self.browse).pack(side='left')
-        controls=ttk.Frame(root,padding=(12,8));controls.pack(fill='x')
-        self.startbtn=ttk.Button(controls,text='검색 시작',command=self.start);self.startbtn.pack(side='left')
-        self.stopbtn=ttk.Button(controls,text='검색 중지',command=self.cancel,state='disabled');self.stopbtn.pack(side='left',padx=7)
-        self.dlbtn=ttk.Button(controls,text='발견 파일 다운로드',command=self.download,state='disabled');self.dlbtn.pack(side='left')
-        self.status=tk.StringVar(value='대기 중');ttk.Label(root,textvariable=self.status,padding=(12,2)).pack(anchor='w')
-        self.progress=ttk.Progressbar(root,mode='determinate');self.progress.pack(fill='x',padx=12,pady=4)
-        resultframe=ttk.Frame(root,padding=(12,5));resultframe.pack(fill='both',expand=True)
-        self.listbox=tk.Listbox(resultframe,selectmode='extended',font=('Consolas',10));self.listbox.pack(side='left',fill='both',expand=True)
-        scroll=ttk.Scrollbar(resultframe,orient='vertical',command=self.listbox.yview);scroll.pack(side='right',fill='y');self.listbox.configure(yscrollcommand=scroll.set)
-        ttk.Label(root,text='참고: 목록 조회 권한이 없는 경우 선택한 패턴만 검사하며, 누락된 파일명은 발견할 수 없습니다.',padding=10).pack(anchor='w')
+    def __init__(self,root):
+        self.root=root;root.title('AlfDown 4.0 | 악기별 검색 · PDF');root.geometry('1020x850');root.minsize(840,700)
+        self.events=queue.Queue();self.stop=threading.Event();self.busy=False
+        self.results={};self.downloaded={}
+        self.code=tk.StringVar(value='00-PC-0019403');self.part=tk.StringVar(value='3');self.page=tk.StringVar(value='15');self.workers=tk.StringVar(value='6')
+        self.folder=tk.StringVar(value=os.path.join(os.path.expanduser('~'),'Downloads','AlfDown'))
+        self.score=tk.BooleanVar(value=False);self.score_token=tk.StringVar(value='asdf');self.score_sep=tk.StringVar(value='_')
+        outer=ttk.Frame(root,padding=10);outer.pack(fill='both',expand=True)
+        ttk.Label(outer,text='AlfDown 4.0',font=('Segoe UI',19,'bold')).pack(anchor='w')
+        ttk.Label(outer,text='악기별 검색 · 검색 중지 · 다운로드 · 악기 분류 PDF 생성').pack(anchor='w')
+        row=ttk.Frame(outer);row.pack(fill='x',pady=9)
+        for label,var,width in [('상품번호',self.code,28),('파트 최대',self.part,5),('페이지 최대',self.page,5),('동시 요청',self.workers,5)]:
+            ttk.Label(row,text=label).pack(side='left',padx=(0,3));ttk.Entry(row,textvariable=var,width=width).pack(side='left',padx=(0,12))
+        self.flags={}
+        for group,items in GROUPS:
+            frame=ttk.LabelFrame(outer,text=group,padding=(10,5));frame.pack(fill='x',pady=3)
+            for code,label in items:
+                key=(group,code);var=tk.BooleanVar(value=(group=='현악기'))
+                self.flags[key]=var
+                ttk.Checkbutton(frame,text=f'{code} ({label})',variable=var).pack(side='left',padx=7)
+            ttk.Button(frame,text='그룹 선택/해제',command=lambda g=group:self.toggle_group(g)).pack(side='right')
+        controls=ttk.Frame(outer);controls.pack(fill='x',pady=8)
+        ttk.Button(controls,text='전체 선택',command=lambda:self.select_all(True)).pack(side='left')
+        ttk.Button(controls,text='전체 해제',command=lambda:self.select_all(False)).pack(side='left',padx=5)
+        self.exts={ext:tk.BooleanVar(value=(ext=='png')) for ext in EXTS}
+        ttk.Label(controls,text='확장자').pack(side='left',padx=(20,5))
+        for ext,var in self.exts.items():ttk.Checkbutton(controls,text=ext,variable=var).pack(side='left',padx=5)
+        scorebox=ttk.LabelFrame(outer,text='스코어 다운 전용 (선택 시 악기 검색 대신 스코어만 검색)',padding=8);scorebox.pack(fill='x',pady=5)
+        ttk.Checkbutton(scorebox,text='스코어 다운 전용',variable=self.score).pack(side='left')
+        ttk.Label(scorebox,text='상품번호 뒤 문자열').pack(side='left',padx=(16,4))
+        ttk.Entry(scorebox,textvariable=self.score_token,width=16).pack(side='left')
+        ttk.Label(scorebox,text='연결 문자').pack(side='left',padx=(16,4))
+        ttk.Combobox(scorebox,textvariable=self.score_sep,values=['_','-',''],width=4,state='readonly').pack(side='left')
+        ttk.Label(scorebox,text='예: 상품번호_asdf-1.png').pack(side='left',padx=12)
+        path=ttk.Frame(outer);path.pack(fill='x',pady=7)
+        ttk.Label(path,text='저장 폴더').pack(side='left');ttk.Entry(path,textvariable=self.folder).pack(side='left',fill='x',expand=True,padx=7)
+        ttk.Button(path,text='찾아보기',command=self.browse).pack(side='left')
+        actions=ttk.Frame(outer);actions.pack(fill='x',pady=7)
+        self.startbtn=ttk.Button(actions,text='검색 시작',command=self.start);self.startbtn.pack(side='left')
+        self.stopbtn=ttk.Button(actions,text='검색 중지',command=self.cancel,state='disabled');self.stopbtn.pack(side='left',padx=7)
+        self.dlbtn=ttk.Button(actions,text='발견 파일 다운로드',command=self.download,state='disabled');self.dlbtn.pack(side='left')
+        self.pdfbtn=ttk.Button(actions,text='다운로드 이미지 → 분류별 PDF',command=self.export_pdf,state='normal');self.pdfbtn.pack(side='left',padx=7)
+        self.status=tk.StringVar(value='대기 중');ttk.Label(outer,textvariable=self.status).pack(anchor='w')
+        self.progress=ttk.Progressbar(outer,mode='determinate');self.progress.pack(fill='x',pady=5)
+        listing=ttk.Frame(outer);listing.pack(fill='both',expand=True)
+        self.listbox=tk.Listbox(listing,font=('Consolas',10));self.listbox.pack(side='left',fill='both',expand=True)
+        scrollbar=ttk.Scrollbar(listing,orient='vertical',command=self.listbox.yview);scrollbar.pack(side='right',fill='y');self.listbox.configure(yscrollcommand=scrollbar.set)
+        ttk.Label(outer,text='※ 서버가 목록 조회를 차단하면 지정한 파일명 후보만 검사합니다. 403은 파일 없음으로 취급하지 않습니다.').pack(anchor='w',pady=5)
         root.after(80,self.pump)
-    def toggle(self,codes):
-        val=not all(self.flags[c].get() for c in codes)
-        for c in codes:self.flags[c].set(val)
-    def select_all(self,v):
-        for f in self.flags.values():f.set(v)
+    def toggle_group(self,group):
+        keys=[k for k in self.flags if k[0]==group];value=not all(self.flags[k].get() for k in keys)
+        for k in keys:self.flags[k].set(value)
+    def select_all(self,value):
+        for var in self.flags.values():var.set(value)
     def browse(self):
         p=filedialog.askdirectory(initialdir=os.path.expanduser('~'))
         if p:self.folder.set(p)
-    def candidates(self,product,parts,pages,codes,exts):
-        for c in codes:
-            for part in ([None] if c in SINGLE else range(1,parts+1)):
-                for page in range(1,pages+1):
-                    for ext in exts:
-                        yield f'{product}_{c}{"" if part is None else part}-{page}.{ext}'
     def validate(self):
         product=self.code.get().strip().rstrip('_')
-        if not product or '/' in product or '\\' in product or '..' in product:raise ValueError('올바른 상품 코드를 입력하세요.')
+        if not re.fullmatch(r'[A-Za-z0-9_-]+',product):raise ValueError('상품번호에는 영문, 숫자, -, _만 사용하세요.')
         parts=int(self.part.get());pages=int(self.page.get());workers=int(self.workers.get())
         if not (1<=parts<=100 and 1<=pages<=500 and 1<=workers<=12):raise ValueError('파트 1~100, 페이지 1~500, 동시 요청 1~12만 가능합니다.')
-        codes=[c for c,v in self.flags.items() if v.get()];exts=[e for e,v in self.exts.items() if v.get()]
-        if not codes or not exts:raise ValueError('악기 코드와 확장자를 선택하세요.')
-        return list(self.candidates(product,parts,pages,codes,exts)),workers
+        extensions=[ext for ext,var in self.exts.items() if var.get()]
+        if not extensions:raise ValueError('확장자를 하나 이상 선택하세요.')
+        selections=[k for k,var in self.flags.items() if var.get()]
+        if not self.score.get() and not selections:raise ValueError('악기를 하나 이상 선택하세요.')
+        mapping=make_names(product,selections,parts,pages,extensions,self.score.get(),self.score_token.get(),self.score_sep.get())
+        if len(mapping)>250000:raise ValueError('검색 후보가 25만 개를 넘습니다. 범위를 줄여주세요.')
+        return mapping,workers
+    def set_busy(self,active):
+        self.busy=active;self.startbtn.config(state='disabled' if active else 'normal')
+        self.stopbtn.config(state='normal' if active else 'disabled')
+        self.dlbtn.config(state='disabled' if active or not self.results else 'normal')
+        self.pdfbtn.config(state='disabled' if active else 'normal')
     def start(self):
         if self.busy:return
-        try:names,workers=self.validate()
+        try:mapping,workers=self.validate()
         except (ValueError,TypeError) as e:messagebox.showerror('입력 확인',str(e));return
-        self.results=[];self.listbox.delete(0,'end');self.stop.clear();self.busy=True
-        self.startbtn.config(state='disabled');self.stopbtn.config(state='normal');self.dlbtn.config(state='disabled')
-        self.progress.config(maximum=len(names),value=0);self.status.set(f'검색 시작: {len(names):,}개 후보')
-        threading.Thread(target=self.search_worker,args=(names,workers),daemon=True).start()
+        self.results={};self.listbox.delete(0,'end');self.stop.clear();self.set_busy(True)
+        self.progress.config(maximum=max(1,len(mapping)),value=0);self.status.set(f'검색 시작: {len(mapping):,}개 후보')
+        threading.Thread(target=self.search_worker,args=(mapping,workers),daemon=True).start()
     def cancel(self):
-        self.stop.set();self.status.set('중지 요청됨 — 진행 중인 요청 종료를 기다리는 중...');self.stopbtn.config(state='disabled')
+        self.stop.set();self.stopbtn.config(state='disabled');self.status.set('중지 요청됨 — 진행 중인 요청 마무리 중...')
     def check(self,name):
-        if self.stop.is_set():return name,None
-        url=BASE+name
+        if self.stop.is_set():return name,'cancelled'
         try:
-            req=urllib.request.Request(url,method='HEAD',headers={'User-Agent':'AlfDown/3.0'})
-            with urllib.request.urlopen(req,timeout=5) as response:
-                if response.status==200:return name,'found'
+            req=urllib.request.Request(BASE+name,method='HEAD',headers={'User-Agent':'AlfDown/4.0'})
+            with urllib.request.urlopen(req,timeout=6) as response:return name,'found' if response.status==200 else 'error'
         except urllib.error.HTTPError as e:
-            if e.code in (404,403):return name,'missing' if e.code==404 else 'forbidden'
-            return name,'error'
+            return name,('missing' if e.code==404 else 'forbidden' if e.code==403 else 'error')
         except Exception:return name,'error'
-        return name,'missing'
-    def search_worker(self,names,workers):
-        done=0;errors=0;forbidden=0;found=0
-        iterator=iter(names)
+    def search_worker(self,mapping,workers):
+        done=found=errors=forbidden=0;names=iter(mapping);pending=set()
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            pending=set()
-            for _ in range(min(workers*2,len(names))):
-                try:pending.add(pool.submit(self.check,next(iterator)))
+            for _ in range(min(workers*2,len(mapping))):
+                try:pending.add(pool.submit(self.check,next(names)))
                 except StopIteration:break
             while pending:
-                completed,pending=wait(pending,timeout=0.2,return_when=FIRST_COMPLETED)
-                for f in completed:
-                    name,status=f.result();done+=1
-                    if status=='found':found+=1;self.events.put(('found',name))
-                    elif status=='forbidden':forbidden+=1
+                completed,pending=wait(pending,timeout=.2,return_when=FIRST_COMPLETED)
+                for future in completed:
+                    name,status=future.result();done+=1
+                    if status=='found':found+=1;self.events.put(('found',(name,mapping[name])))
                     elif status=='error':errors+=1
+                    elif status=='forbidden':forbidden+=1
                     if not self.stop.is_set():
-                        try:pending.add(pool.submit(self.check,next(iterator)))
+                        try:pending.add(pool.submit(self.check,next(names)))
                         except StopIteration:pass
-                self.events.put(('progress',(done,len(names),found,errors,forbidden)))
-        self.events.put(('done',(self.stop.is_set(),done,found,errors,forbidden)))
+                self.events.put(('progress',(done,len(mapping),found,errors,forbidden)))
+        self.events.put(('search_done',(self.stop.is_set(),done,found,errors,forbidden)))
     def download(self):
         if self.busy or not self.results:return
         folder=self.folder.get().strip()
-        if not folder:messagebox.showerror('저장 폴더','저장 폴더를 선택하세요.');return
+        if not folder:messagebox.showerror('저장 폴더','폴더를 선택하세요.');return
         try:os.makedirs(folder,exist_ok=True)
         except OSError as e:messagebox.showerror('폴더 오류',str(e));return
-        self.busy=True;self.stop.clear();self.startbtn.config(state='disabled');self.stopbtn.config(state='normal');self.dlbtn.config(state='disabled')
-        self.progress.config(maximum=len(self.results),value=0)
-        threading.Thread(target=self.download_worker,args=(list(self.results),folder),daemon=True).start()
-    def download_worker(self,names,folder):
-        success=0;fail=0
-        for i,name in enumerate(names,1):
+        self.stop.clear();self.set_busy(True);self.progress.config(maximum=len(self.results),value=0)
+        threading.Thread(target=self.download_worker,args=(dict(self.results),folder),daemon=True).start()
+    def download_worker(self,items,folder):
+        success=fail=0
+        for i,(name,groups) in enumerate(items.items(),1):
             if self.stop.is_set():break
-            dest=os.path.join(folder,name)
+            dest=os.path.join(folder,name);temp=dest+'.part'
             try:
-                if not os.path.isfile(dest):
-                    req=urllib.request.Request(BASE+name,headers={'User-Agent':'AlfDown/3.0'})
-                    with urllib.request.urlopen(req,timeout=15) as src,open(dest+'.part','wb') as out:
+                if not os.path.isfile(dest) or os.path.getsize(dest)==0:
+                    req=urllib.request.Request(BASE+name,headers={'User-Agent':'AlfDown/4.0'})
+                    with urllib.request.urlopen(req,timeout=20) as src,open(temp,'wb') as out:
                         while True:
                             if self.stop.is_set():raise InterruptedError('중지')
                             chunk=src.read(65536)
                             if not chunk:break
                             out.write(chunk)
-                    os.replace(dest+'.part',dest)
-                success+=1
+                    os.replace(temp,dest)
+                success+=1;self.events.put(('downloaded',(name,groups)))
             except Exception:
                 fail+=1
-                try:os.remove(dest+'.part')
+                try:os.remove(temp)
                 except OSError:pass
-            self.events.put(('download_progress',(i,len(names),success,fail)))
+            self.events.put(('download_progress',(i,len(items),success,fail)))
         self.events.put(('download_done',(success,fail,self.stop.is_set())))
+    def export_pdf(self):
+        if self.busy:return
+        folder=self.folder.get().strip()
+        if not os.path.isdir(folder):messagebox.showwarning('폴더 확인','다운로드 폴더가 없습니다. 먼저 이미지를 다운로드하세요.');return
+        # Only files discovered/downloaded by this session; avoid mixing unrelated files.
+        if not self.downloaded:
+            messagebox.showwarning('PDF 생성','현재 실행에서 다운로드 완료된 이미지가 없습니다. 먼저 검색 후 다운로드하세요.');return
+        self.stop.clear();self.set_busy(True)
+        threading.Thread(target=self.pdf_worker,args=(dict(self.downloaded),folder),daemon=True).start()
+    def pdf_worker(self,items,folder):
+        grouped=defaultdict(list)
+        for name,groups in items.items():
+            path=os.path.join(folder,name)
+            if os.path.isfile(path):
+                for group in groups:grouped[group].append((name,path))
+        created=[];skipped=0
+        order=[g for g,_ in GROUPS]+['스코어']
+        for group in order:
+            if self.stop.is_set():break
+            files=sorted(grouped[group],key=lambda x:natural_key(x[0]))
+            if not files:continue
+            images=[]
+            try:
+                for name,path in files:
+                    if self.stop.is_set():break
+                    try:
+                        with Image.open(path) as im:
+                            im=ImageOps.exif_transpose(im)
+                            if im.mode=='RGBA':
+                                background=Image.new('RGB',im.size,'white');background.paste(im,mask=im.getchannel('A'));im=background
+                            else:im=im.convert('RGB')
+                            images.append(im)
+                    except (OSError,UnidentifiedImageError,ValueError):skipped+=1
+                if images and not self.stop.is_set():
+                    out=os.path.join(folder,f'AlfDown_{group}.pdf')
+                    images[0].save(out,'PDF',save_all=True,append_images=images[1:],resolution=150)
+                    created.append(out)
+            except Exception as e:self.events.put(('pdf_error',f'{group}: {e}'))
+            finally:
+                for im in images:im.close()
+        self.events.put(('pdf_done',(created,skipped,self.stop.is_set())))
     def pump(self):
         try:
             for _ in range(200):
                 kind,value=self.events.get_nowait()
-                if kind=='found':self.results.append(value);self.listbox.insert('end',value);self.listbox.see('end')
+                if kind=='found':
+                    name,groups=value;self.results[name]=set(groups);self.listbox.insert('end',f'[{", ".join(sorted(groups))}] {name}');self.listbox.see('end')
                 elif kind=='progress':
-                    done,total,found,err,forbid=value;self.progress['value']=done;self.status.set(f'검사 {done:,}/{total:,} | 발견 {found} | 오류 {err} | 접근거부 {forbid}')
-                elif kind=='done':
-                    stopped,done,found,err,forbid=value;self.busy=False;self.startbtn.config(state='normal');self.stopbtn.config(state='disabled');self.dlbtn.config(state='normal' if self.results else 'disabled');self.status.set(f'{"중지됨" if stopped else "검색 완료"} | 검사 {done:,} | 발견 {found} | 오류 {err} | 접근거부 {forbid}')
+                    done,total,found,err,forbidden=value;self.progress['value']=done
+                    self.status.set(f'검사 {done:,}/{total:,} | 발견 {found} | 오류 {err} | 접근거부 {forbidden}')
+                elif kind=='search_done':
+                    stopped,done,found,err,forbidden=value;self.set_busy(False)
+                    self.status.set(f'{"중지됨" if stopped else "검색 완료"} | 검사 {done:,} | 발견 {found} | 오류 {err} | 접근거부 {forbidden}')
+                elif kind=='downloaded':
+                    name,groups=value;self.downloaded[name]=set(groups)
                 elif kind=='download_progress':
-                    done,total,success,fail=value;self.progress['value']=done;self.status.set(f'다운로드 {done}/{total} | 성공 {success} | 실패 {fail}')
+                    done,total,success,fail=value;self.progress['value']=done
+                    self.status.set(f'다운로드 {done}/{total} | 성공 {success} | 실패 {fail}')
                 elif kind=='download_done':
-                    success,fail,stopped=value;self.busy=False;self.startbtn.config(state='normal');self.stopbtn.config(state='disabled');self.dlbtn.config(state='normal' if self.results else 'disabled');self.status.set(f'다운로드 {"중지" if stopped else "완료"} | 성공 {success} | 실패 {fail}')
+                    success,fail,stopped=value;self.set_busy(False)
+                    self.status.set(f'다운로드 {"중지" if stopped else "완료"} | 성공 {success} | 실패 {fail}')
+                elif kind=='pdf_error':messagebox.showerror('PDF 생성 오류',value)
+                elif kind=='pdf_done':
+                    created,skipped,stopped=value;self.set_busy(False)
+                    self.status.set(f'PDF {len(created)}개 생성 | 이미지 오류 {skipped} | {"중지됨" if stopped else "완료"}')
+                    messagebox.showinfo('PDF 생성 결과',f'PDF {len(created)}개 생성\n이미지 읽기 실패 {skipped}개\n'+ '\n'.join(os.path.basename(p) for p in created))
         except queue.Empty:pass
         self.root.after(80,self.pump)
 
