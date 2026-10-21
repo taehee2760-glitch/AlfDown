@@ -8,7 +8,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 BASE = 'https://alfred-dsm-shopify-exports-prod.s3.us-west-2.amazonaws.com/'
 GROUPS = [
  ('현악기',[('VN','바이올린'),('VA','비올라'),('VC','첼로'),('SB','스트링베이스')]),
- ('목관악기',[('P','피콜로'),('F','플루트'),('O','오보에'),('C','클라리넷'),('BC','베이스클라리넷'),('B','바순')]),
+ ('목관악기',[('P','피콜로'),('F','플루트'),('O','오보에'),('C','클라리넷'),('BC','베이스클라리넷'),('B','바순'),('AX','알토색소폰'),('TX','테너색소폰')]),
  ('금관악기',[('H','호른'),('T','트럼펫'),('TN','트롬본'),('TB','튜바')]),
  ('타악기 외',[('M','말렛퍼커션'),('TMP','팀파니'),('PC','퍼커션'),('K','피아노'),('H','하프')]),
 ]
@@ -35,7 +35,7 @@ def make_names(product, selections, parts, pages, extensions, score=False):
 
 class App:
     def __init__(self,root):
-        self.root=root;root.title('AlfDown 5.1 | Orchestra Edition');root.geometry('1120x860');root.minsize(920,730)
+        self.root=root;root.title('AlfDown 5.2 | Simsangso Edition');root.geometry('1260x920');root.minsize(1080,780)
         try:root.iconbitmap(os.path.join(getattr(sys,'_MEIPASS',os.path.dirname(__file__)),'treble.ico'))
         except Exception:pass
         self.configure_theme()
@@ -46,7 +46,7 @@ class App:
         self.score=tk.BooleanVar(value=False)
         outer=ttk.Frame(root,padding=20);outer.pack(fill='both',expand=True)
         ttk.Label(outer,text='𝄞  AlfDown',style='Hero.TLabel').pack(anchor='w')
-        ttk.Label(outer,text='ORCHESTRA EDITION  ·  악기별 악보 검색 / 다운로드 / 순서 지정 PDF',style='Subtitle.TLabel').pack(anchor='w')
+        ttk.Label(outer,text='SIMSANGSO EDITION  ·  악기별 악보 검색 / 다운로드 / 맞춤 PDF',style='Subtitle.TLabel').pack(anchor='w')
         row=ttk.Frame(outer);row.pack(fill='x',pady=9)
         for label,var,width in [('상품번호',self.code,28),('파트 최대',self.part,5),('페이지 최대',self.page,5),('동시 요청',self.workers,5)]:
             ttk.Label(row,text=label).pack(side='left',padx=(0,3));ttk.Entry(row,textvariable=var,width=width).pack(side='left',padx=(0,12))
@@ -79,7 +79,7 @@ class App:
         self.status=tk.StringVar(value='대기 중');ttk.Label(outer,textvariable=self.status).pack(anchor='w')
         self.progress=ttk.Progressbar(outer,mode='determinate');self.progress.pack(fill='x',pady=5)
         listing=ttk.Frame(outer);listing.pack(fill='both',expand=True)
-        self.listbox=tk.Listbox(listing,font=('Consolas',10),bg='#111c2e',fg='#e5edf8',selectbackground='#2563eb',selectforeground='white',relief='flat',borderwidth=0,highlightthickness=0);self.listbox.pack(side='left',fill='both',expand=True)
+        self.listbox=tk.Listbox(listing,font=('Consolas',10),bg='#fffaf2',fg='#514236',selectbackground='#d9b99c',selectforeground='#392c23',relief='flat',borderwidth=0,highlightthickness=0);self.listbox.pack(side='left',fill='both',expand=True)
         scrollbar=ttk.Scrollbar(listing,orient='vertical',command=self.listbox.yview);scrollbar.pack(side='right',fill='y');self.listbox.configure(yscrollcommand=scrollbar.set)
         ttk.Label(outer,text='검색은 선택한 패턴의 공개 파일만 확인합니다. 403 접근거부는 파일 없음과 구분합니다.',style='Subtitle.TLabel').pack(anchor='w',pady=7)
         root.after(80,self.pump)
@@ -138,7 +138,7 @@ class App:
     def check(self,name):
         if self.stop.is_set():return name,'cancelled'
         try:
-            req=urllib.request.Request(BASE+name,method='HEAD',headers={'User-Agent':'AlfDown/4.0'})
+            req=urllib.request.Request(BASE+name,method='HEAD',headers={'User-Agent':'AlfDown/5.2'})
             with urllib.request.urlopen(req,timeout=6) as response:return name,'found' if response.status==200 else 'error'
         except urllib.error.HTTPError as e:
             return name,('missing' if e.code==404 else 'forbidden' if e.code==403 else 'error')
@@ -176,7 +176,7 @@ class App:
             dest=os.path.join(folder,name);temp=dest+'.part'
             try:
                 if not os.path.isfile(dest) or os.path.getsize(dest)==0:
-                    req=urllib.request.Request(BASE+name,headers={'User-Agent':'AlfDown/4.0'})
+                    req=urllib.request.Request(BASE+name,headers={'User-Agent':'AlfDown/5.2'})
                     with urllib.request.urlopen(req,timeout=20) as src,open(temp,'wb') as out:
                         while True:
                             if self.stop.is_set():raise InterruptedError('중지')
@@ -218,24 +218,25 @@ class App:
     def configure_theme(self):
         style=ttk.Style(self.root)
         style.theme_use('clam')
-        bg='#0b1220';surface='#172238';fg='#eaf0fa';muted='#9aacc7';accent='#3b82f6'
+        bg='#f7f0e5';surface='#fffaf2';fg='#514236';muted='#8f7c6d';accent='#aa8064'
+        border='#dfcdbb';hover='#ead9c6'
         self.root.configure(bg=bg)
         style.configure('.',background=bg,foreground=fg,font=('Segoe UI',10))
         style.configure('TFrame',background=bg)
         style.configure('TLabel',background=bg,foreground=fg)
-        style.configure('Hero.TLabel',background=bg,foreground='#f4f7ff',font=('Segoe UI',25,'bold'))
+        style.configure('Hero.TLabel',background=bg,foreground='#77543c',font=('Segoe UI',25,'bold'))
         style.configure('Subtitle.TLabel',background=bg,foreground=muted,font=('Segoe UI',9))
-        style.configure('TLabelframe',background=bg,foreground='#a9c7ff',bordercolor='#33435d',relief='solid')
-        style.configure('TLabelframe.Label',background=bg,foreground='#a9c7ff',font=('Segoe UI',10,'bold'))
+        style.configure('TLabelframe',background=bg,foreground='#886b55',bordercolor=border,relief='solid')
+        style.configure('TLabelframe.Label',background=bg,foreground='#886b55',font=('Segoe UI',10,'bold'))
         style.configure('TCheckbutton',background=bg,foreground=fg)
         style.map('TCheckbutton',background=[('active',bg)],foreground=[('disabled',muted)])
-        style.configure('TEntry',fieldbackground=surface,foreground=fg,insertcolor=fg,bordercolor='#354761',padding=5)
-        style.configure('TButton',background=surface,foreground=fg,bordercolor='#354761',padding=(13,8))
-        style.map('TButton',background=[('active','#263a58'),('disabled','#182133')],foreground=[('disabled','#70809a')])
+        style.configure('TEntry',fieldbackground=surface,foreground=fg,insertcolor=fg,bordercolor=border,padding=5)
+        style.configure('TButton',background=surface,foreground=fg,bordercolor=border,padding=(13,8))
+        style.map('TButton',background=[('active',hover),('disabled','#eee6dc')],foreground=[('disabled','#b3a394')])
         style.configure('Accent.TButton',background=accent,foreground='white',bordercolor=accent)
-        style.map('Accent.TButton',background=[('active','#2563eb'),('disabled','#263e67')])
-        style.configure('TProgressbar',troughcolor=surface,background=accent,bordercolor=surface)
-        style.configure('TScrollbar',background=surface,troughcolor=bg)
+        style.map('Accent.TButton',background=[('active','#92694e'),('disabled','#d9c8b8')],foreground=[('disabled','#fffaf2')])
+        style.configure('TProgressbar',troughcolor=surface,background=accent,bordercolor=border)
+        style.configure('TScrollbar',background=hover,troughcolor=bg)
 
     def pdf_worker(self,items,folder):
         grouped=defaultdict(list)
