@@ -1,4 +1,4 @@
-import os, re, queue, threading, urllib.request, urllib.error
+import os, re, queue, threading, urllib.request, urllib.error, sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -18,15 +18,12 @@ EXTS = ['png','jpg','jpeg','webp']
 def natural_key(s):
     return [int(p) if p.isdigit() else p.lower() for p in re.split(r'(\d+)',s)]
 
-def make_names(product, selections, parts, pages, extensions, score=False, score_token='', separator='_'):
+def make_names(product, selections, parts, pages, extensions, score=False):
     mapping=defaultdict(set)
     if score:
-        token=score_token.strip()
-        if not token or not re.fullmatch(r'[A-Za-z0-9_-]+',token):
-            raise ValueError('스코어 문자열은 영문/숫자/하이픈/밑줄로 입력하세요.')
         for page in range(1,pages+1):
             for ext in extensions:
-                mapping[f'{product}{separator}{token}-{page}.{ext}'].add('스코어')
+                mapping[f'{product}-{page}.{ext}'].add('스코어')
     else:
         for group,code in selections:
             for part in ([None] if code in SINGLE or (group=='타악기 외' and code=='H') else range(1,parts+1)):
@@ -38,21 +35,24 @@ def make_names(product, selections, parts, pages, extensions, score=False, score
 
 class App:
     def __init__(self,root):
-        self.root=root;root.title('AlfDown 4.0 | 악기별 검색 · PDF');root.geometry('1020x850');root.minsize(840,700)
+        self.root=root;root.title('AlfDown 5.1 | Orchestra Edition');root.geometry('1120x860');root.minsize(920,730)
+        try:root.iconbitmap(os.path.join(getattr(sys,'_MEIPASS',os.path.dirname(__file__)),'treble.ico'))
+        except Exception:pass
+        self.configure_theme()
         self.events=queue.Queue();self.stop=threading.Event();self.busy=False
         self.results={};self.downloaded={}
         self.code=tk.StringVar(value='00-PC-0019403');self.part=tk.StringVar(value='3');self.page=tk.StringVar(value='15');self.workers=tk.StringVar(value='6')
         self.folder=tk.StringVar(value=os.path.join(os.path.expanduser('~'),'Downloads','AlfDown'))
-        self.score=tk.BooleanVar(value=False);self.score_token=tk.StringVar(value='asdf');self.score_sep=tk.StringVar(value='_')
-        outer=ttk.Frame(root,padding=10);outer.pack(fill='both',expand=True)
-        ttk.Label(outer,text='AlfDown 4.0',font=('Segoe UI',19,'bold')).pack(anchor='w')
-        ttk.Label(outer,text='악기별 검색 · 검색 중지 · 다운로드 · 악기 분류 PDF 생성').pack(anchor='w')
+        self.score=tk.BooleanVar(value=False)
+        outer=ttk.Frame(root,padding=20);outer.pack(fill='both',expand=True)
+        ttk.Label(outer,text='𝄞  AlfDown',style='Hero.TLabel').pack(anchor='w')
+        ttk.Label(outer,text='ORCHESTRA EDITION  ·  악기별 악보 검색 / 다운로드 / 순서 지정 PDF',style='Subtitle.TLabel').pack(anchor='w')
         row=ttk.Frame(outer);row.pack(fill='x',pady=9)
         for label,var,width in [('상품번호',self.code,28),('파트 최대',self.part,5),('페이지 최대',self.page,5),('동시 요청',self.workers,5)]:
             ttk.Label(row,text=label).pack(side='left',padx=(0,3));ttk.Entry(row,textvariable=var,width=width).pack(side='left',padx=(0,12))
         self.flags={}
         for group,items in GROUPS:
-            frame=ttk.LabelFrame(outer,text=group,padding=(10,5));frame.pack(fill='x',pady=3)
+            frame=ttk.LabelFrame(outer,text=group,padding=(12,9));frame.pack(fill='x',pady=3)
             for code,label in items:
                 key=(group,code);var=tk.BooleanVar(value=(group=='현악기'))
                 self.flags[key]=var
@@ -64,27 +64,24 @@ class App:
         self.exts={ext:tk.BooleanVar(value=(ext=='png')) for ext in EXTS}
         ttk.Label(controls,text='확장자').pack(side='left',padx=(20,5))
         for ext,var in self.exts.items():ttk.Checkbutton(controls,text=ext,variable=var).pack(side='left',padx=5)
-        scorebox=ttk.LabelFrame(outer,text='스코어 다운 전용 (선택 시 악기 검색 대신 스코어만 검색)',padding=8);scorebox.pack(fill='x',pady=5)
+        scorebox=ttk.LabelFrame(outer,text='스코어 다운로드 (악기 검색 대신 상품번호-페이지번호 형식)',padding=10);scorebox.pack(fill='x',pady=5)
         ttk.Checkbutton(scorebox,text='스코어 다운 전용',variable=self.score).pack(side='left')
-        ttk.Label(scorebox,text='상품번호 뒤 문자열').pack(side='left',padx=(16,4))
-        ttk.Entry(scorebox,textvariable=self.score_token,width=16).pack(side='left')
-        ttk.Label(scorebox,text='연결 문자').pack(side='left',padx=(16,4))
-        ttk.Combobox(scorebox,textvariable=self.score_sep,values=['_','-',''],width=4,state='readonly').pack(side='left')
-        ttk.Label(scorebox,text='예: 상품번호_asdf-1.png').pack(side='left',padx=12)
+        ttk.Label(scorebox,text='예: 00-PC-0019403-1.png  →  00-PC-0019403-2.png',style='Subtitle.TLabel').pack(side='left',padx=18)
         path=ttk.Frame(outer);path.pack(fill='x',pady=7)
         ttk.Label(path,text='저장 폴더').pack(side='left');ttk.Entry(path,textvariable=self.folder).pack(side='left',fill='x',expand=True,padx=7)
         ttk.Button(path,text='찾아보기',command=self.browse).pack(side='left')
+        ttk.Button(path,text='📂 저장 폴더 열기',command=self.open_save_folder).pack(side='left',padx=(8,0))
         actions=ttk.Frame(outer);actions.pack(fill='x',pady=7)
-        self.startbtn=ttk.Button(actions,text='검색 시작',command=self.start);self.startbtn.pack(side='left')
+        self.startbtn=ttk.Button(actions,text='검색 시작',command=self.start,style='Accent.TButton');self.startbtn.pack(side='left')
         self.stopbtn=ttk.Button(actions,text='검색 중지',command=self.cancel,state='disabled');self.stopbtn.pack(side='left',padx=7)
-        self.dlbtn=ttk.Button(actions,text='발견 파일 다운로드',command=self.download,state='disabled');self.dlbtn.pack(side='left')
-        self.pdfbtn=ttk.Button(actions,text='다운로드 이미지 → 분류별 PDF',command=self.export_pdf,state='normal');self.pdfbtn.pack(side='left',padx=7)
+        self.dlbtn=ttk.Button(actions,text='발견 파일 다운로드',command=self.download,state='disabled',style='Accent.TButton');self.dlbtn.pack(side='left')
+        self.pdfbtn=ttk.Button(actions,text='악기 순서대로 PDF 만들기',command=self.export_pdf,state='normal');self.pdfbtn.pack(side='left',padx=7)
         self.status=tk.StringVar(value='대기 중');ttk.Label(outer,textvariable=self.status).pack(anchor='w')
         self.progress=ttk.Progressbar(outer,mode='determinate');self.progress.pack(fill='x',pady=5)
         listing=ttk.Frame(outer);listing.pack(fill='both',expand=True)
-        self.listbox=tk.Listbox(listing,font=('Consolas',10));self.listbox.pack(side='left',fill='both',expand=True)
+        self.listbox=tk.Listbox(listing,font=('Consolas',10),bg='#111c2e',fg='#e5edf8',selectbackground='#2563eb',selectforeground='white',relief='flat',borderwidth=0,highlightthickness=0);self.listbox.pack(side='left',fill='both',expand=True)
         scrollbar=ttk.Scrollbar(listing,orient='vertical',command=self.listbox.yview);scrollbar.pack(side='right',fill='y');self.listbox.configure(yscrollcommand=scrollbar.set)
-        ttk.Label(outer,text='※ 서버가 목록 조회를 차단하면 지정한 파일명 후보만 검사합니다. 403은 파일 없음으로 취급하지 않습니다.').pack(anchor='w',pady=5)
+        ttk.Label(outer,text='검색은 선택한 패턴의 공개 파일만 확인합니다. 403 접근거부는 파일 없음과 구분합니다.',style='Subtitle.TLabel').pack(anchor='w',pady=7)
         root.after(80,self.pump)
     def toggle_group(self,group):
         keys=[k for k in self.flags if k[0]==group];value=not all(self.flags[k].get() for k in keys)
@@ -94,6 +91,24 @@ class App:
     def browse(self):
         p=filedialog.askdirectory(initialdir=os.path.expanduser('~'))
         if p:self.folder.set(p)
+    def open_save_folder(self):
+        folder=os.path.abspath(os.path.expanduser(self.folder.get().strip())) if self.folder.get().strip() else ''
+        if not folder:
+            messagebox.showwarning('저장 폴더', '저장 폴더를 지정해주세요.')
+            return
+        try:
+            os.makedirs(folder,exist_ok=True)
+            if sys.platform == 'win32':
+                os.startfile(folder)
+            elif sys.platform == 'darwin':
+                import subprocess
+                subprocess.Popen(['open',folder])
+            else:
+                import subprocess
+                subprocess.Popen(['xdg-open',folder])
+        except Exception as exc:
+            messagebox.showerror('폴더 열기 실패', f'저장 폴더를 열 수 없습니다.\n{exc}')
+
     def validate(self):
         product=self.code.get().strip().rstrip('_')
         if not re.fullmatch(r'[A-Za-z0-9_-]+',product):raise ValueError('상품번호에는 영문, 숫자, -, _만 사용하세요.')
@@ -103,7 +118,7 @@ class App:
         if not extensions:raise ValueError('확장자를 하나 이상 선택하세요.')
         selections=[k for k,var in self.flags.items() if var.get()]
         if not self.score.get() and not selections:raise ValueError('악기를 하나 이상 선택하세요.')
-        mapping=make_names(product,selections,parts,pages,extensions,self.score.get(),self.score_token.get(),self.score_sep.get())
+        mapping=make_names(product,selections,parts,pages,extensions,self.score.get())
         if len(mapping)>250000:raise ValueError('검색 후보가 25만 개를 넘습니다. 범위를 줄여주세요.')
         return mapping,workers
     def set_busy(self,active):
@@ -115,7 +130,7 @@ class App:
         if self.busy:return
         try:mapping,workers=self.validate()
         except (ValueError,TypeError) as e:messagebox.showerror('입력 확인',str(e));return
-        self.results={};self.listbox.delete(0,'end');self.stop.clear();self.set_busy(True)
+        self.results={};self.downloaded={};self.listbox.delete(0,'end');self.stop.clear();self.set_busy(True)
         self.progress.config(maximum=max(1,len(mapping)),value=0);self.status.set(f'검색 시작: {len(mapping):,}개 후보')
         threading.Thread(target=self.search_worker,args=(mapping,workers),daemon=True).start()
     def cancel(self):
@@ -185,6 +200,43 @@ class App:
             messagebox.showwarning('PDF 생성','현재 실행에서 다운로드 완료된 이미지가 없습니다. 먼저 검색 후 다운로드하세요.');return
         self.stop.clear();self.set_busy(True)
         threading.Thread(target=self.pdf_worker,args=(dict(self.downloaded),folder),daemon=True).start()
+    @staticmethod
+    def pdf_sort_key(group,name):
+        # Order by the user's instrument order, then part number, then page number.
+        # Match long prefixes exactly (TN before T, BC before B).
+        match=re.search(r'_([A-Z]+)(\d+)?-(\d+)\.[^.]+$',name,re.I)
+        if group=='스코어':
+            m=re.search(r'-(\d+)\.[^.]+$',name)
+            return (0,0,int(m.group(1)) if m else 999999,natural_key(name))
+        if not match:return (999,999,999,natural_key(name))
+        code,part,page=match.group(1).upper(),match.group(2),match.group(3)
+        ordered=[c for g,items in GROUPS if g==group for c,_ in items]
+        try:rank=ordered.index(code)
+        except ValueError:rank=999
+        return (rank,int(part) if part else 0,int(page),natural_key(name))
+
+    def configure_theme(self):
+        style=ttk.Style(self.root)
+        style.theme_use('clam')
+        bg='#0b1220';surface='#172238';fg='#eaf0fa';muted='#9aacc7';accent='#3b82f6'
+        self.root.configure(bg=bg)
+        style.configure('.',background=bg,foreground=fg,font=('Segoe UI',10))
+        style.configure('TFrame',background=bg)
+        style.configure('TLabel',background=bg,foreground=fg)
+        style.configure('Hero.TLabel',background=bg,foreground='#f4f7ff',font=('Segoe UI',25,'bold'))
+        style.configure('Subtitle.TLabel',background=bg,foreground=muted,font=('Segoe UI',9))
+        style.configure('TLabelframe',background=bg,foreground='#a9c7ff',bordercolor='#33435d',relief='solid')
+        style.configure('TLabelframe.Label',background=bg,foreground='#a9c7ff',font=('Segoe UI',10,'bold'))
+        style.configure('TCheckbutton',background=bg,foreground=fg)
+        style.map('TCheckbutton',background=[('active',bg)],foreground=[('disabled',muted)])
+        style.configure('TEntry',fieldbackground=surface,foreground=fg,insertcolor=fg,bordercolor='#354761',padding=5)
+        style.configure('TButton',background=surface,foreground=fg,bordercolor='#354761',padding=(13,8))
+        style.map('TButton',background=[('active','#263a58'),('disabled','#182133')],foreground=[('disabled','#70809a')])
+        style.configure('Accent.TButton',background=accent,foreground='white',bordercolor=accent)
+        style.map('Accent.TButton',background=[('active','#2563eb'),('disabled','#263e67')])
+        style.configure('TProgressbar',troughcolor=surface,background=accent,bordercolor=surface)
+        style.configure('TScrollbar',background=surface,troughcolor=bg)
+
     def pdf_worker(self,items,folder):
         grouped=defaultdict(list)
         for name,groups in items.items():
@@ -195,7 +247,7 @@ class App:
         order=[g for g,_ in GROUPS]+['스코어']
         for group in order:
             if self.stop.is_set():break
-            files=sorted(grouped[group],key=lambda x:natural_key(x[0]))
+            files=sorted(grouped[group],key=lambda x:self.pdf_sort_key(group,x[0]))
             if not files:continue
             images=[]
             try:
