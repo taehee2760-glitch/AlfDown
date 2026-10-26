@@ -8,11 +8,11 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 BASE = 'https://alfred-dsm-shopify-exports-prod.s3.us-west-2.amazonaws.com/'
 GROUPS = [
  ('현악기',[('VN','바이올린'),('VA','비올라'),('VC','첼로'),('SB','스트링베이스')]),
- ('목관악기',[('P','피콜로'),('F','플루트'),('O','오보에'),('C','클라리넷'),('BC','베이스클라리넷'),('B','바순'),('AX','알토색소폰'),('TX','테너색소폰')]),
- ('금관악기',[('H','호른'),('T','트럼펫'),('TN','트롬본'),('TB','튜바')]),
+ ('목관악기',[('P','피콜로'),('F','플루트'),('O','오보에'),('C','클라리넷'),('AC','알토클라리넷'),('BC','베이스클라리넷'),('B','바순'),('AX','알토색소폰'),('TX','테너색소폰'),('BTX','바리톤색소폰')]),
+ ('금관악기',[('H','호른'),('T','트럼펫'),('TN','트롬본'),('BBC','유포늄 B.C.'),('BTC','유포늄 T.C.'),('TB','튜바')]),
  ('타악기 외',[('M','말렛퍼커션'),('TMP','팀파니'),('PC','퍼커션'),('K','피아노'),('H','하프')]),
 ]
-SINGLE = {'SB','BC','TMP','K'}
+SINGLE = {'SB','BC','BTX','TMP','K'}
 EXTS = ['png','jpg','jpeg','webp']
 
 def natural_key(s):
@@ -35,7 +35,7 @@ def make_names(product, selections, parts, pages, extensions, score=False):
 
 class App:
     def __init__(self,root):
-        self.root=root;root.title('AlfDown 5.2 | Simsangso Edition');root.geometry('1260x920');root.minsize(1080,780)
+        self.root=root;root.title('AlfDown 5.4 | Simsangso Edition');root.geometry('1260x920');root.minsize(1080,780)
         try:root.iconbitmap(os.path.join(getattr(sys,'_MEIPASS',os.path.dirname(__file__)),'treble.ico'))
         except Exception:pass
         self.configure_theme()
@@ -53,10 +53,13 @@ class App:
         self.flags={}
         for group,items in GROUPS:
             frame=ttk.LabelFrame(outer,text=group,padding=(12,9));frame.pack(fill='x',pady=3)
-            for code,label in items:
+            choices=ttk.Frame(frame)
+            choices.pack(side='left',fill='x',expand=True)
+            for index,(code,label) in enumerate(items):
                 key=(group,code);var=tk.BooleanVar(value=(group=='현악기'))
                 self.flags[key]=var
-                ttk.Checkbutton(frame,text=f'{code} ({label})',variable=var).pack(side='left',padx=7)
+                ttk.Checkbutton(choices,text=f'{code} ({label})',variable=var).grid(
+                    row=index//5,column=index%5,sticky='w',padx=(3,14),pady=3)
             ttk.Button(frame,text='그룹 선택/해제',command=lambda g=group:self.toggle_group(g)).pack(side='right')
         controls=ttk.Frame(outer);controls.pack(fill='x',pady=8)
         ttk.Button(controls,text='전체 선택',command=lambda:self.select_all(True)).pack(side='left')
@@ -138,7 +141,7 @@ class App:
     def check(self,name):
         if self.stop.is_set():return name,'cancelled'
         try:
-            req=urllib.request.Request(BASE+name,method='HEAD',headers={'User-Agent':'AlfDown/5.2'})
+            req=urllib.request.Request(BASE+name,method='HEAD',headers={'User-Agent':'AlfDown/5.4'})
             with urllib.request.urlopen(req,timeout=6) as response:return name,'found' if response.status==200 else 'error'
         except urllib.error.HTTPError as e:
             return name,('missing' if e.code==404 else 'forbidden' if e.code==403 else 'error')
@@ -176,7 +179,7 @@ class App:
             dest=os.path.join(folder,name);temp=dest+'.part'
             try:
                 if not os.path.isfile(dest) or os.path.getsize(dest)==0:
-                    req=urllib.request.Request(BASE+name,headers={'User-Agent':'AlfDown/5.2'})
+                    req=urllib.request.Request(BASE+name,headers={'User-Agent':'AlfDown/5.4'})
                     with urllib.request.urlopen(req,timeout=20) as src,open(temp,'wb') as out:
                         while True:
                             if self.stop.is_set():raise InterruptedError('중지')
