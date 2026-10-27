@@ -10,9 +10,9 @@ GROUPS = [
  ('현악기',[('VN','바이올린'),('VA','비올라'),('VC','첼로'),('SB','스트링베이스')]),
  ('목관악기',[('P','피콜로'),('F','플루트'),('O','오보에'),('C','클라리넷'),('AC','알토클라리넷'),('BC','베이스클라리넷'),('B','바순'),('AX','알토색소폰'),('TX','테너색소폰'),('BTX','바리톤색소폰')]),
  ('금관악기',[('H','호른'),('T','트럼펫'),('TN','트롬본'),('BBC','유포늄 B.C.'),('BTC','유포늄 T.C.'),('TB','튜바')]),
- ('타악기 외',[('M','말렛퍼커션'),('TMP','팀파니'),('PC','퍼커션'),('K','피아노'),('H','하프')]),
+ ('타악기 외',[('M','말렛퍼커션'),('TMP','팀파니'),('PC','퍼커션'),('D','세트드럼'),('K','피아노'),('H','하프')]),
 ]
-SINGLE = {'SB','BC','BTX','TMP','K'}
+SINGLE = {'SB','BC','BTX','TMP','D','K'}
 EXTS = ['png','jpg','jpeg','webp']
 
 def natural_key(s):
@@ -35,7 +35,7 @@ def make_names(product, selections, parts, pages, extensions, score=False):
 
 class App:
     def __init__(self,root):
-        self.root=root;root.title('AlfDown 5.4 | Simsangso Edition');root.geometry('1260x920');root.minsize(1080,780)
+        self.root=root;root.title('AlfDown 5.5 | Simsangso Edition');root.geometry('1260x920');root.minsize(1080,780)
         try:root.iconbitmap(os.path.join(getattr(sys,'_MEIPASS',os.path.dirname(__file__)),'treble.ico'))
         except Exception:pass
         self.configure_theme()
