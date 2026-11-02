@@ -1,4 +1,4 @@
-import os, re, queue, threading, urllib.request, urllib.error, sys, sqlite3, subprocess, io, time, json
+import os, re, queue, threading, urllib.request, urllib.error, sys, sqlite3, subprocess, io, time, json, webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -11,10 +11,10 @@ GROUPS = [
  ('솔로현악기',[('SVN','솔로바이올린'),('SVA','솔로비올라'),('SVC','솔로첼로')]),
  ('목관악기',[('P','피콜로'),('F','플루트'),('O','오보에'),('C','클라리넷'),('AC','알토클라리넷'),('BC','베이스클라리넷'),('B','바순'),('AX','알토색소폰'),('TX','테너색소폰'),('BTX','바리톤색소폰')]),
  ('금관악기',[('H','호른'),('T','트럼펫'),('TN','트롬본'),('TN3TB','트롬본3튜바'),('BTN','베이스트롬본'),('BBC','유포늄 B.C.'),('BTC','유포늄 T.C.'),('TB','튜바')]),
- ('타악기 외',[('M','말렛퍼커션'),('TMP','팀파니'),('PC','퍼커션'),('K','피아노'),('H','하프'),('D','세트드럼'),('SD','스네어드럼'),('DS','드럼세트')]),
+ ('타악기 외',[('M','말렛퍼커션'),('TMP','팀파니'),('PC','퍼커션'),('D','세트드럼'),('SD','스네어드럼'),('DS','드럼세트'),('K','피아노'),('H','하프')]),
 ]
 SINGLE = {'SB','BC','BTX','TMP','K','D','SVN','SVA','SVC','TN3TB','BTN','SD','DS'}
-EXTS = ['png','jpg','jpeg','webp']
+EXTS = ['png']
 
 def natural_key(s):
     return [int(p) if p.isdigit() else p.lower() for p in re.split(r'(\d+)',s)]
@@ -43,34 +43,48 @@ class App:
         self.events=queue.Queue();self.stop=threading.Event();self.busy=False
         self.results={};self.downloaded={};self.visible_names=[];self.preview_photo=None;self.custom_order=None
         self.db_path=os.path.join(os.path.expanduser('~'),'.alfdown6_history.sqlite3');self.init_db()
-        self.code=tk.StringVar(value='00-PC-0019403');self.part=tk.StringVar(value='3');self.page=tk.StringVar(value='15');self.workers=tk.StringVar(value='6')
+        self.code=tk.StringVar(value='00-PC-0019403');self.part=tk.StringVar(value='4');self.page=tk.StringVar(value='15');self.workers=tk.StringVar(value='6')
         self.settings_path=os.path.join(os.path.expanduser('~'),'.alfdown6_settings.json')
         self.folder=tk.StringVar(value=self.load_last_folder())
         self.folder.trace_add('write',self.on_folder_changed)
         self._folder_save_job=None
         self.root.protocol('WM_DELETE_WINDOW',self.on_close)
         self.score=tk.BooleanVar(value=False);self.auto=tk.BooleanVar(value=True);self.make_parts=tk.BooleanVar(value=True);self.make_combined=tk.BooleanVar(value=True)
-        outer=ttk.Frame(root,padding=20);outer.pack(fill='both',expand=True)
+        # Main page scrolls independently of the results list.
+        self.main_canvas=tk.Canvas(root,bg='#f7f0e5',highlightthickness=0,borderwidth=0)
+        self.main_scroll=ttk.Scrollbar(root,orient='vertical',command=self.main_canvas.yview)
+        self.main_canvas.configure(yscrollcommand=self.main_scroll.set)
+        self.main_scroll.pack(side='right',fill='y')
+        self.main_canvas.pack(side='left',fill='both',expand=True)
+        outer=ttk.Frame(self.main_canvas,padding=20)
+        self.main_window=self.main_canvas.create_window((0,0),window=outer,anchor='nw')
+        outer.bind('<Configure>',lambda e:self.main_canvas.configure(scrollregion=self.main_canvas.bbox('all')))
+        self.main_canvas.bind('<Configure>',lambda e:self.main_canvas.itemconfigure(self.main_window,width=e.width))
+        self.main_canvas.bind_all('<MouseWheel>',self.on_mousewheel,add='+')
+        self.main_canvas.bind_all('<Button-4>',self.on_mousewheel,add='+')
+        self.main_canvas.bind_all('<Button-5>',self.on_mousewheel,add='+')
         ttk.Label(outer,text='𝄞  AlfDown',style='Hero.TLabel').pack(anchor='w')
         ttk.Label(outer,text='SIMSANGSO EDITION  ·  악기별 악보 검색 / 다운로드 / 맞춤 PDF',style='Subtitle.TLabel').pack(anchor='w')
         row=ttk.Frame(outer);row.pack(fill='x',pady=9)
         for label,var,width in [('상품번호',self.code,28),('파트 최대',self.part,5),('페이지 최대',self.page,5),('동시 요청',self.workers,5)]:
-            ttk.Label(row,text=label).pack(side='left',padx=(0,3));ttk.Entry(row,textvariable=var,width=width).pack(side='left',padx=(0,12))
+            ttk.Label(row,text=label).pack(side='left',padx=(0,3));ttk.Entry(row,textvariable=var,width=width).pack(side='left',padx=(0,6 if label=='상품번호' else 12))
+            if label=='상품번호':
+                ttk.Button(row,text='Alfred.com 열기',command=lambda:webbrowser.open('https://www.alfred.com/')).pack(side='left',padx=(0,12))
         ttk.Checkbutton(outer,text='스마트 탐색 (범위 내 존재하는 파트/페이지 자동 확인)',variable=self.auto).pack(anchor='w')
         self.flags={}
         for group,items in GROUPS:
             frame=ttk.LabelFrame(outer,text=group,padding=(12,9));frame.pack(fill='x',pady=3)
-            for code,label in items:
+            group_grid=ttk.Frame(frame);group_grid.pack(side='left',fill='x',expand=True)
+            for index,(code,label) in enumerate(items):
                 key=(group,code);var=tk.BooleanVar(value=(group=='현악기'))
                 self.flags[key]=var
-                ttk.Checkbutton(frame,text=f'{code} ({label})',variable=var).pack(side='left',padx=7)
+                ttk.Checkbutton(group_grid,text=f'{code} ({label})',variable=var).grid(row=index//5,column=index%5,sticky='w',padx=(3,14),pady=3)
             ttk.Button(frame,text='그룹 선택/해제',command=lambda g=group:self.toggle_group(g)).pack(side='right')
         controls=ttk.Frame(outer);controls.pack(fill='x',pady=8)
         ttk.Button(controls,text='전체 선택',command=lambda:self.select_all(True)).pack(side='left')
         ttk.Button(controls,text='전체 해제',command=lambda:self.select_all(False)).pack(side='left',padx=5)
-        self.exts={ext:tk.BooleanVar(value=(ext=='png')) for ext in EXTS}
-        ttk.Label(controls,text='확장자').pack(side='left',padx=(20,5))
-        for ext,var in self.exts.items():ttk.Checkbutton(controls,text=ext,variable=var).pack(side='left',padx=5)
+        # Only PNG exists on the source; no extension selector is needed.
+        self.exts={'png':tk.BooleanVar(value=True)}
         scorebox=ttk.LabelFrame(outer,text='스코어 다운로드 (악기 검색 대신 상품번호-페이지번호 형식)',padding=10);scorebox.pack(fill='x',pady=5)
         ttk.Checkbutton(scorebox,text='스코어 다운 전용',variable=self.score).pack(side='left')
         ttk.Label(scorebox,text='예: 00-PC-0019403-1.png  →  00-PC-0019403-2.png',style='Subtitle.TLabel').pack(side='left',padx=18)
@@ -88,7 +102,7 @@ class App:
         ttk.Button(actions,text='누락 검사',command=self.report_missing).pack(side='left',padx=5)
         ttk.Button(actions,text='다운로드 기록',command=self.show_history).pack(side='left',padx=5)
         ttk.Button(actions,text='PDF 순서',command=self.configure_order).pack(side='left',padx=5)
-        ttk.Checkbutton(outer,text='파트별 PDF',variable=self.make_parts).pack(anchor='w')
+        ttk.Checkbutton(outer,text='악기군별 PDF',variable=self.make_parts).pack(anchor='w')
         ttk.Checkbutton(outer,text='전체 합본 PDF',variable=self.make_combined).pack(anchor='w')
         self.status=tk.StringVar(value='대기 중');ttk.Label(outer,textvariable=self.status).pack(anchor='w')
         self.progress=ttk.Progressbar(outer,mode='determinate');self.progress.pack(fill='x',pady=5)
@@ -97,6 +111,24 @@ class App:
         scrollbar=ttk.Scrollbar(listing,orient='vertical',command=self.listbox.yview);scrollbar.pack(side='right',fill='y');self.listbox.configure(yscrollcommand=scrollbar.set)
         ttk.Label(outer,text='검색은 선택한 패턴의 공개 파일만 확인합니다. 403 접근거부는 파일 없음과 구분합니다.',style='Subtitle.TLabel').pack(anchor='w',pady=7)
         root.after(80,self.pump)
+    def on_mousewheel(self,event):
+        # Let scrollable popup widgets handle their own wheel events.
+        if event.widget.winfo_toplevel() is not self.root:return
+        widget=event.widget
+        while widget is not None:
+            if widget is self.listbox:
+                if getattr(event,'num',None)==4:delta=-3
+                elif getattr(event,'num',None)==5:delta=3
+                else:delta=-int(event.delta/120)*3 if event.delta else 0
+                self.listbox.yview_scroll(delta,'units')
+                return 'break'
+            widget=getattr(widget,'master',None)
+        if getattr(event,'num',None)==4:delta=-3
+        elif getattr(event,'num',None)==5:delta=3
+        else:delta=-int(event.delta/120)*3 if event.delta else 0
+        self.main_canvas.yview_scroll(delta,'units')
+        return 'break'
+
     def toggle_group(self,group):
         keys=[k for k in self.flags if k[0]==group];value=not all(self.flags[k].get() for k in keys)
         for k in keys:self.flags[k].set(value)
@@ -296,17 +328,23 @@ class App:
             db.execute('INSERT OR REPLACE INTO downloads(name,path,saved_at) VALUES(?,?,CURRENT_TIMESTAMP)',(name,os.path.abspath(path)))
 
     def show_history(self):
-        w=tk.Toplevel(self.root);w.title('다운로드 기록');w.geometry('820x480')
-        lb=tk.Listbox(w,font=('Consolas',10));lb.pack(fill='both',expand=True,padx=12,pady=12)
+        w=tk.Toplevel(self.root);w.title('다운로드 기록 · 상품별');w.geometry('820x480')
+        ttk.Label(w,text='상품번호별 다운로드 기록 (중복 없이 표시)').pack(anchor='w',padx=12,pady=(12,0))
+        lb=tk.Listbox(w,font=('Consolas',11));lb.pack(fill='both',expand=True,padx=12,pady=12)
         with sqlite3.connect(self.db_path) as db:
-            rows=db.execute('SELECT name,path,saved_at FROM downloads ORDER BY saved_at DESC LIMIT 2000').fetchall()
-        for name,path,date in rows:lb.insert('end',f'{date}  {name}  {"✓" if os.path.isfile(path) else "파일 없음"}')
-        def open_item():
-            if not lb.curselection():return
-            path=rows[lb.curselection()[0]][1]
-            if os.path.isfile(path):self.open_path(os.path.dirname(path))
-            else:messagebox.showwarning('파일 없음','기록은 있지만 원본 파일이 없습니다.')
-        ttk.Button(w,text='선택 파일 폴더 열기',command=open_item).pack(pady=8)
+            rows=db.execute('SELECT name,path,saved_at FROM downloads ORDER BY saved_at DESC').fetchall()
+        products={}
+        for name,path,date in rows:
+            # The prefix before _PART or -PAGE is the product identifier.
+            product=name.split('_',1)[0] if '_' in name else re.sub(r'-\d+\.png$','',name,flags=re.I)
+            if product not in products:products[product]={'folder':os.path.dirname(path),'count':0,'date':date}
+            products[product]['count']+=1
+            if os.path.isdir(os.path.dirname(path)) and not os.path.isdir(products[product]['folder']):
+                products[product]['folder']=os.path.dirname(path)
+        product_ids=list(products)
+        for product in product_ids:
+            item=products[product]
+            lb.insert('end',f'{product}   ·   {item["count"]}개 파일   ·   {item["date"]}')
 
     @staticmethod
     def open_path(path):
@@ -370,29 +408,31 @@ class App:
         ttk.Button(w,text='순서 저장',command=save).pack(pady=8)
 
     def pdf_worker(self,items,folder,make_parts,make_combined):
-        bypart=defaultdict(list)
+        # One PDF per instrument family; within each family, instrument/part/page order.
+        bygroup=defaultdict(list)
         for name,groups in items.items():
             path=os.path.join(folder,name)
             if not os.path.isfile(path):continue
-            m=re.search(r'_([A-Z]+)(\d*)-(\d+)\.[^.]+$',name,re.I)
-            if m:key=m.group(1).upper()+(m.group(2) or '')
-            else:key='SCORE'
-            bypart[key].append((name,path))
-        codes=self.custom_order or [code for group,items in GROUPS for code,_ in items]
-        def sortpart(part):
-            m=re.match(r'([A-Z]+)(\d*)$',part)
-            code=m.group(1) if m else part
-            return (codes.index(code) if code in codes else 999,int(m.group(2) or 0) if m else 0)
-        ordered=sorted(bypart,key=sortpart)
+            group=next(iter(groups),None)
+            if group not in [g for g,_ in GROUPS]+['스코어']:
+                group='스코어' if re.search(r'-\d+\.png$',name,re.I) and '_' not in name else None
+            if group:bygroup[group].append((name,path))
+        codes=self.custom_order or [code for group,entries in GROUPS for code,_ in entries]
+        def order_key(name):
+            m=re.search(r'_([A-Z]+?)(\d*)-(\d+)\.png$',name,re.I)
+            if not m:
+                n=re.search(r'-(\d+)\.png$',name,re.I)
+                return (-1,0,int(n.group(1)) if n else 0)
+            code,part,page=m.group(1).upper(),int(m.group(2) or 0),int(m.group(3))
+            return (codes.index(code) if code in codes else 999,part,page)
+        family_order=['스코어']+[g for g,_ in GROUPS]
         created=[];skipped=0;combined=[]
-        # PDF names follow the selected destination folder, not the product code.
-        folder_label=os.path.basename(os.path.normpath(os.path.abspath(folder)))
-        folder_label=folder_label.rstrip(' .') or 'AlfDown'
+        folder_label=os.path.basename(os.path.normpath(os.path.abspath(folder))).rstrip(' .') or 'AlfDown'
         try:
-            for part in ordered:
+            for group in family_order:
                 if self.stop.is_set():break
                 images=[]
-                for name,path in sorted(bypart[part],key=lambda v:int(re.search(r'-(\d+)\.',v[0]).group(1))):
+                for name,path in sorted(bygroup.get(group,[]),key=lambda item:order_key(item[0])):
                     if self.stop.is_set():break
                     try:
                         with Image.open(path) as source:
@@ -404,7 +444,7 @@ class App:
                     except Exception:skipped+=1
                 if not images:continue
                 if make_parts:
-                    out=os.path.join(folder,f'{folder_label}_{"스코어" if part == "SCORE" else part}.pdf')
+                    out=os.path.join(folder,f'{folder_label}_{group}.pdf')
                     images[0].save(out,'PDF',save_all=True,append_images=images[1:],resolution=150)
                     created.append(out)
                 if make_combined:combined.extend(images)
